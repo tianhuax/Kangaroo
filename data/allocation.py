@@ -1,16 +1,16 @@
 import argparse
 
 parser = argparse.ArgumentParser(description='sp')
-parser.add_argument('--outdir', type=str, default='/home/ma-user/work/Data/')
+parser.add_argument('--outdir', type=str, default='/home/xth/speculative_decoding/kangaroo/work/Data')
 args = parser.parse_args()
 
 import os
 from concurrent.futures import ThreadPoolExecutor
 
 s = 0
-e = 68000 - 1
+e = 2 - 1
 
-gpus = [[0],[1],[2],[3],[4],[5],[6],[7]]
+gpus = [[0,1]]
 
 num_p = len(gpus)
 outdir = '{}/sharegpt_{}_{}_mufp16'.format(args.outdir, s, e)

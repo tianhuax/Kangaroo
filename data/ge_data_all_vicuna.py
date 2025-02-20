@@ -1,5 +1,7 @@
 import argparse
 from tqdm import tqdm
+from PIL import Image
+from transformers import AutoProcessor, LlavaForConditionalGeneration
 
 parser = argparse.ArgumentParser(description='sp')
 parser.add_argument('--start', type=int, default=0)
@@ -9,7 +11,7 @@ parser.add_argument('--gpu_index', type=int, nargs='+', default=[0])
 parser.add_argument('--outdir', type=str, default='outdir0')
 args = parser.parse_args()
 import os
-
+print("!!!!!!!!!!!!!", str(args.gpu_index)[1:-1])
 os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_index)[1:-1]
 
 import torch
@@ -19,7 +21,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from fastchat.model.model_adapter import get_conversation_template
 
-bigname="/cache/CKPT/vicuna-7b-v1.3/"
+bigname="mistral-community/pixtral-12b"
 
 def longest_common_prefix(list1, list2):
     prefix_length = 0
@@ -40,9 +42,11 @@ def build_dataset_rank(
         select=None,
         data_path = "/cache/CKPT/ShareGPT_V4.3_unfiltered_cleaned_split.json"
 ):
-    ds = load_dataset('json', data_files=data_path)
+    #ds = load_dataset('json', data_files=data_path)
     
+    ds = load_dataset("Areen007/pixtral_data")
     ds = ds['train']
+    print(ds)
     ds = ds.shuffle(seed=42)
     ds1 = ds.select(range(args.start, args.end))
     original_columns1 = ds1.column_names
@@ -53,93 +57,124 @@ def build_dataset_rank(
         new_examples = {
             "conversation":[],
             "input_ids": [],
+            "pixel_values": [],
+            "image_sizes": [],
             "loss_mask": []
         }
-        for i in range(len(examples['id'])):
-            conv = get_conversation_template("vicuna")
-            roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
-            source= examples['conversations'][i]
-            if roles[source[0]["from"]] != conv.roles[0]:
-                # Skip the first one if it is not from human
-                source = source[1:]
-            conv.messages = []
-            for j, sentence in enumerate(source):
-                role = roles[sentence["from"]]
-                assert role == conv.roles[j % 2], f"{i}"
-                conv.append_message(role, sentence["value"])
-            conversation=conv.get_prompt()
-
-            input_ids = tokenizer(
+        for i in range(len(examples)):
+            # conv = get_conversation_template("vicuna")
+            # roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+            # source= examples['conversations'][i]
+            # if roles[source[0]["from"]] != conv.roles[0]:
+            #     # Skip the first one if it is not from human
+            #     source = source[1:]
+            # conv.messages = []
+            # for j, sentence in enumerate(source):
+            #     role = roles[sentence["from"]]
+            #     assert role == conv.roles[j % 2], f"{i}"
+            #     conv.append_message(role, sentence["value"])
+            # conversation=conv.get_prompt()
+            image = examples['image'][i]
+            caption = examples['caption'][i]
+            conversation = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "content": "What is shown in this image?"},
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "content": caption},
+                    ],
+                }
+            ]
+            prompt = tokenizer.apply_chat_template(
                 conversation,
-                return_tensors="pt",
-                max_length=tokenizer.model_max_length,
-                truncation=True,
-            ).input_ids[0]
-            loss_mask=torch.ones_like(input_ids)
+            )
 
-            sep = conv.sep + conv.roles[1] + ": "
+            inputs = tokenizer(text=prompt, images=[image], return_tensors="pt")
+            input_ids = inputs['input_ids']
+            pixel_values = inputs['pixel_values']
+            image_size = inputs['image_sizes']
 
-            total_len = int(input_ids.ne(tokenizer.pad_token_id).sum())
+            loss_mask=torch.ones_like(input_ids[0])
 
-            turns = conversation.split(conv.sep2)
-            cur_len = 1
-            loss_mask[:cur_len] = 0
-            for i, turn in enumerate(turns):
-                if turn == "":
-                    break
-                turn_len = len(tokenizer(turn).input_ids)
+            loss_mask[:4170] = 0
+            
+            # turns = conversation.split(conv.sep2)
+            # cur_len = 1
+            # loss_mask[:cur_len] = 0
+            # for i, turn in enumerate(turns):
+            #     if turn == "":
+            #         break
+            #     turn_len = len(tokenizer(turn).input_ids)
 
-                parts = turn.split(sep)
-                if len(parts) != 2:
-                    break
-                parts[0] += sep
-                # "-2" is hardcoded for the Llama tokenizer to make the offset correct.
-                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
+            #     parts = turn.split(sep)
+            #     if len(parts) != 2:
+            #         break
+            #     parts[0] += sep
+            #     # "-2" is hardcoded for the Llama tokenizer to make the offset correct.
+            #     instruction_len = len(tokenizer(parts[0]).input_ids) - 2
 
-                if i != 0 and not tokenizer.legacy:
-                    # The legacy and non-legacy modes handle special tokens differently
-                    instruction_len -= 1
+            #     if i != 0 and not tokenizer.legacy:
+            #         # The legacy and non-legacy modes handle special tokens differently
+            #         instruction_len -= 1
 
-                # Ignore the user instructions
-                loss_mask[cur_len: cur_len + instruction_len] = 0
-                cur_len += turn_len
+            #     # Ignore the user instructions
+            #     loss_mask[cur_len: cur_len + instruction_len] = 0
+            #     cur_len += turn_len
 
-                if i != 0 and not tokenizer.legacy:
-                    # The legacy and non-legacy modes handle special tokens differently
-                    cur_len -= 1
+            #     if i != 0 and not tokenizer.legacy:
+            #         # The legacy and non-legacy modes handle special tokens differently
+            #         cur_len -= 1
 
-            loss_mask[cur_len:] = 0
+            # loss_mask[cur_len:] = 0
 
             new_examples["conversation"].append(conversation)
-            new_examples["input_ids"].append(input_ids[None,:])
+            new_examples["input_ids"].append(input_ids)
             new_examples["loss_mask"].append(loss_mask[None,:])
+            new_examples["pixel_values"].append(pixel_values)
+            new_examples["image_sizes"].append(image_size)
+
 
         return new_examples
 
     ds1 = ds1.map(
         preprocess_function,
         batched=True,
-        num_proc=num_proc,
+        num_proc=1,
         remove_columns=original_columns1,
         load_from_cache_file=False
     )
 
     ds1.set_format(type="torch")
+    print(ds1)
     return ds1
 
-bigtokenizer = AutoTokenizer.from_pretrained(bigname, use_fast=False)
+bigtokenizer = AutoProcessor.from_pretrained(bigname, use_fast=False)
 ds = build_dataset_rank(bigtokenizer)
 print(ds)
-bigmodel = AutoModelForCausalLM.from_pretrained(bigname,  device_map="auto", torch_dtype=torch.float16)
+bigmodel = LlavaForConditionalGeneration.from_pretrained(bigname,  device_map="auto", torch_dtype=torch.float16)
 bigmodel.eval()
 
 
 
 @torch.no_grad()
 def ge(data):
-    input_ids=data["input_ids"]
-    outs_big = bigmodel(input_ids.cuda(), output_hidden_states=True)
-    assert len(outs_big.hidden_states) == 33
+    input_ids=data["input_ids"].to(bigmodel.device, dtype=torch.long)
+    pixel_values = data['pixel_values'].to(bigmodel.device, dtype=torch.float16)
+    image_sizes = data['image_sizes'].to(bigmodel.device, dtype=torch.int32)
+    print(pixel_values.shape)
+    outs_big = bigmodel.generate(input_ids = input_ids, 
+                        pixel_values=pixel_values, 
+                        image_sizes = image_sizes,
+                        max_new_tokens=36,
+                        output_hidden_states=True)
+    print(len(outs_big.hidden_states))
+    #assert len(outs_big.hidden_states) == 33
 
     max_prob_tokens_big = torch.argmax(outs_big.logits, dim=-1)
     probs = torch.softmax(outs_big.logits, dim=-1)
